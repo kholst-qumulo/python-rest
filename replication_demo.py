@@ -217,7 +217,7 @@ def delete_replication_source(cluster, id):
 
 
 def delete_replication_target(cluster, id):
-    # todo : bug workaround - i set requests.delete to requests.post and moved the delete path to URI
+    # API inconsistent - delete_target is a POST but delete_source is a DELETE call
     url = 'https://{0}:8000/v2/replication/target-relationships/{1}/delete'.format(cluster.name, id)
     default_header = {'content-type': 'application/json', 'Authorization': cluster.token}
     response = requests.post(url, headers=default_header, verify=False, timeout=timeoutvalue)
