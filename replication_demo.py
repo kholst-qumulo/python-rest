@@ -1,6 +1,12 @@
 # this is a demo of how to use requests module to call qumulo API
 # it is a demo and example, use for testing, do not run against a production cluster 
 # this demo will delete all replications without warning (test2, test3)
+# todo: Replication can specify a target IP for each call to round-robin balance replications
+# todo: create a round-robin style resolver for target IPs
+
+# test assumes the cluster has the following paths on the source and target
+# src: /1dir
+# src: /1kdirs/{dir1..dir2.. etc, 1k}
 
 
 import json
