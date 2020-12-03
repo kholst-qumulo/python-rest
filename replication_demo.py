@@ -1,14 +1,3 @@
-# this is a demo of how to use requests module to call qumulo API
-# it is a demo and example, use for testing, do not run against a production cluster 
-# this demo will delete all replications without warning (test2, test3)
-# todo: Replication can specify a target IP for each call to round-robin balance replications
-# todo: create a round-robin style resolver for target IPs
-
-# test assumes the cluster has the following paths on the source and target
-# src: /1dir
-# src: /1kdirs/{dir1..dir2.. etc, 1k}
-
-
 import json
 import requests
 import urllib3
@@ -16,39 +5,71 @@ import pickle
 import os.path
 import time
 import logging
+import argparse
 
 
 
 # STATIC login info for testing
 srcclusterip = '192.168.1.6'
-tgtclusterip = '192.168.1.9'
+tgtclusterip = '192.168.1.218'
 srccluster_user = "admin"
 tgtcluster_user = "admin"
 srccluster_password = "Password1"
 tgtcluster_password = "Password1"
 
 
+# argparse structure, can call args.src to override static values above
+# todo : not implemented 
+parser = argparse.ArgumentParser()
+parser.add_argument('-src', action="store_true", default=False, help="source cluster IP")
+parser.add_argument('-tgt', action="store_true", default=False, help="target cluster IP")
+parser.add_argument('-srcpw', action="store_true", default=False)
+parser.add_argument('-tgtpw', action="store_true", default=False)
+args = parser.parse_args()
+print('argssrcip', args.src)
+print('argssrcip', args.tgt)
+print('argssrcip', args.srcpw)
+print('argssrcip', args.tgtpw)
+
+
 # STATIC config info
 timeoutvalue = 3
-# default_header = {'content-type': 'application/json'}
+default_header = {'content-type': 'application/json'}  #login handler dependant on this
 urllib3.disable_warnings()
 tokenpathname = ""
 
 
 
 class Cluster:
-    def __init__(self, hostname, token, uuid, user, passwd):
+    def __init__(self, hostname, token, uuid, user, passwd, rritx=0, rrip=0, iplist=[]):
         self.name = hostname
         self.token = token
         self.uuid = uuid
         self.user = user
         self.passwd = passwd
+        self.rritx = rritx    # last known position iterationg through ip list
+        self.rrip = rrip  # store last returned value
+        self.iplist = iplist # we only store for target
+
+    def roundrobin(self):
+        rrdepth = len(self.iplist)
+        print('DEBUG: class func: iplist is - ', self.iplist)
+        if self.rritx < rrdepth:
+            self.rrip = self.iplist[self.rritx]
+            #print('current value from list: {0} \n \
+            #current iterator position: {1} of {2}\n ' \
+            #.format(self.rrip, self.rritx, rrdepth))
+            self.rritx += 1
+        if self.rritx >= rrdepth:
+            self.rritx = 0
+        return self.rrip
+
 
     def login(self):
-        global admin_password
         tokenpathname = 'token.pickle.' + str(self.uuid)
         login_json = {"username": self.user, "password": self.passwd}
         logging.debug(login_json)
+        print('selfdotname login value: ', self.name)
         base_url = "https://" + self.name + ":8000"
         uri = '/v1/session/login'
         expected_return_code = "200"
@@ -76,13 +97,16 @@ class Cluster:
 
 def get_json(cluster, uri, expected_response=200, timeout=5):
     url = 'https://{0}:8000{1}'.format(cluster.name, uri)
+    print('debug: here?')
     ################################################
     # bad workaround for empty token
     ################################################
     if cluster.token == 0:
         default_header = {'content-type': 'application/json'}
+        print('debug: here?')
     if cluster.token != 0:
         default_header = {'content-type': 'application/json', 'Authorization': cluster.token}
+        print('debug: or here?')
     ################################################
     response = requests.get(url, headers=default_header, verify=False, timeout=timeoutvalue)
     if response.status_code == expected_response:
@@ -110,8 +134,7 @@ def loginhandler(cluster):
     #################################################
     # UUID doesnt need login, get UUID to map to token pickle file
     cluster.uuid = get_cluster_uuid(cluster)
-    print('p1 uuid', srccluster.uuid)
-    print('p2 uuid', tgtcluster.uuid)
+    print('DEBUG: found this UUID from api call', cluster.uuid)
 
     tokenpathname = 'token.pickle.' + str(cluster.uuid)
     if os.path.exists(tokenpathname):
@@ -158,15 +181,13 @@ def replication_create(srccluster, tgtclusterip, srcpath, tgtpath):
     default_header = {'content-type': 'application/json', 'Authorization': srccluster.token}
     data = {'target_root_path': srcpath, 'target_address': tgtclusterip, 'source_root_path': tgtpath}
     output = requests.post(url, headers=default_header, json=data, verify=False, timeout=timeoutvalue)
-    # print('DEBUG: i did my post call', output.text)
     outputjson = output.json()
     if output.status_code == 400:
         print('DEBUG: ERROR: replication_create: output description: ', outputjson['description'])
         print('DEBUG: ERROR: replication_create: tried to make a replication against a non-existant source-dir')
         exit()
-
     replicationid = outputjson['id']
-    print('DEBUG: demo of how to select new replication id', replicationid)
+    print('DEBUG: replication_create:  new replication id', replicationid)
     return replicationid
 
 
@@ -181,10 +202,10 @@ def dismiss_target_replication_error(cluster, id):
     # if you delete a replication from the source
     # need to go to target and dismiss-error
     url = 'https://{0}:8000/v2/replication/target-relationships/{1}/dismiss-error'.format(cluster.name, id)
-    print('DEBUG URL :', url)
+    # print('DEBUG URL :', url)
     default_header = {'content-type': 'application/json', 'Authorization': cluster.token}
     response = requests.post(url, headers=default_header, verify=False, timeout=timeoutvalue)
-    print(response)
+    # print(response)
     return response
 
 
@@ -212,24 +233,20 @@ def delete_replication_source(cluster, id):
     default_header = {'content-type': 'application/json', 'Authorization': cluster.token}
     response = requests.delete(url, headers=default_header, verify=False, timeout=timeoutvalue)
     print('DEBUG: delete_replication_source: Deleted target id - ', id)
-    print(response.text)
+    # print(response.text)
     return response
 
 
 def delete_replication_target(cluster, id):
-    # API inconsistent - delete_target is a POST but delete_source is a DELETE call
+    # todo : bug workaround - i set requests.delete to requests.post and moved the delete path to URI
     url = 'https://{0}:8000/v2/replication/target-relationships/{1}/delete'.format(cluster.name, id)
     default_header = {'content-type': 'application/json', 'Authorization': cluster.token}
     response = requests.post(url, headers=default_header, verify=False, timeout=timeoutvalue)
     print('DEBUG: delete_replication_target: Deleted target id - ', id)
-    print(response.text)
+    # print(response.text)
     return response
 
 
-def get_cluster_network_addresses(cluster, interfaceid, networkid):
-    uri = 'GET /v2/network/interfaces/{0}/networks/{1}'.format(interfaceid, networkid)
-    output = get_json(cluster, uri)
-    return output
 
 
 def get_source_replication_status(cluster, id):
@@ -249,7 +266,7 @@ def get_target_replication_status(cluster,id):
 def check_num_active_source_replications():
     result = list_source_relationship_statuses(srccluster)
     resultlength = len(result)
-    print('DEBUG: found {0} active source replications'.format(resultlength))
+    # print('DEBUG: found {0} active source replications'.format(resultlength))
     for itr in range(resultlength):
         currentid = result[itr]['id']
         # print('DEBUG: check_num_active_source_replications', currentid)
@@ -260,7 +277,7 @@ def check_num_active_target_replications():
     # this could take an object instead of re-calling list_target
     result = list_target_relationship_statuses(tgtcluster)
     resultlength = len(result)
-    print('DEBUG: check_num_active_target_replications: found {0} active target replications'.format(resultlength))
+    # print('DEBUG: check_num_active_target_replications: found {0} active target replications'.format(resultlength))
     for itr in range(resultlength):
         currentid = result[itr]['id']
         # print('DEBUG: check_num_active_target_replications: found', currentid)
@@ -270,16 +287,15 @@ def check_num_active_target_replications():
 def build_list_of_dirs(cluster, readpath):
     # init empty lists , populate later with subdirs found
     dirnamelist = []
-
     # Set up SRC info
     basepath_contents = read_dir_aggregates(cluster, readpath)
     basepath_length = len(basepath_contents['files'])
-
     # Build list of dirs
     print('\n', get_cluster_name(cluster))
     print('DEBUG: build_list_of_dirs: num of dirs found in path {0}: {1}'.format(readpath, basepath_length))
     for itx in range(basepath_length):
-        path = basepath_contents['path']
+        # basepath = basepath_contents['path']
+        # print('DEBUG: build_list_of_dirs basepath - ', basepath
         if basepath_contents['files'][itx]['type'] == 'FS_FILE_TYPE_DIRECTORY':
             dirname = basepath_contents['files'][itx]['name']
             dirnamelist.append(dirname)
@@ -306,11 +322,12 @@ def build_list_of_finished_target_replications():
             if not endreason:
                 # making sure the end-reason field is empty
                 if not errorfromjob:
-                    # print('end reason empty, error_from_job empty, duration has a value ')
-                    # print(currentid, duration, '\n')
+                    # print('found : end reason : null, error_from_job : null, duration NOT null', \
+                    # currentid, duration, '\n')
                     completedlist.append(currentid)
-                    print('DEBUG: build_list_of_finished_target_replications: added ID - ', currentid)
+                    # print('DEBUG: build_list_of_finished_target_replications: added ID - ', currentid)
     return completedlist
+
 
 def get_list_of_awaiting_target_auth():
     # for test use, find target policies waiting for auth
@@ -329,6 +346,19 @@ def get_list_of_awaiting_target_auth():
     return waitingforauthlist
 
 
+def get_network_addresses_list(cluster, interfaceid=1):
+    uri = '/v2/network/interfaces/{0}/status/'.format(interfaceid)
+    output = get_json(cluster, uri)
+    iplist = []
+    maxitx = len(output)
+    itx = 0
+    while itx < maxitx:
+        #print('number of node result returned: ', maxitx)
+        #print('node id num is: ', output[itx]['node_id'])
+        #print('node ip is ', output[itx]['network_statuses'][0]['address'])
+        iplist.append(output[itx]['network_statuses'][0]['address'])
+        itx += 1
+    return iplist
 
 
 
@@ -352,10 +382,11 @@ def test1_create_and_destroy_onereplication():
     src_status = get_source_replication_status(srccluster, newreplicationid)
     tgt_status = get_target_replication_status(tgtcluster, newreplicationid)
     # todo: check and confirm if replication finished
-    time.sleep(3)
+    time.sleep(50)
     delete_replication_source(srccluster, newreplicationid)
     delete_replication_target(tgtcluster, newreplicationid)
     return
+
 
 def test2_delete_all_target_relationships():
     # clear all target replcations
@@ -378,6 +409,7 @@ def test2_delete_all_target_relationships():
         print('DEBUG: ERROR: test2_delete_all_target_relationships: delete qty mismatch - test failed \n before qty-{0} after qty-{1}'.format(qtybeforedelete, qtyafterdelete))
         exit()
 
+        
 def test3_delete_all_source_relationships():
     # clear all target replcations
     outputfromlistallsource = list_source_relationship_statuses(srccluster)
@@ -397,26 +429,22 @@ def test3_delete_all_source_relationships():
         print('DEBUG: ERROR: test3_delete_all_source_relationships - test failed \n before qty-{0} after qty-{1}'.format(qtybeforedelete, qtyafterdelete))
         exit()
 
+        
 def test4_compare_tgt_and_src_basepaths():
     # this test should get path and compare
     # on both tgt and src
     # maybe check file size and count too?
-
     # path we will read from, on source & target cluster
     readpath = "%2F"
-
     # init empty lists , populate later with subdirs found
     srcnamelist = []
     tgtnamelist = []
-
     # Set up SRC info
     src_basepath_contents = read_dir_aggregates(srccluster, readpath)
     src_basepath_qty = len(src_basepath_contents['files'])
-
     # Set up tgt info
     tgt_basepath_contents = read_dir_aggregates(tgtcluster, readpath)
     tgt_basepath_qty = len(tgt_basepath_contents['files'])
-
     # Build list of source dirs
     # todo - put this into - def build_list_of_dirs()
     print('\n', get_cluster_name(srccluster))
@@ -466,6 +494,9 @@ def test5_findandcreateall_with_queue():
     maxqueuedepth = 100
     src_basepath_contents = []
 
+    testiplist = get_network_addresses_list(tgtcluster)
+    tgtcluster.iplist = testiplist
+
     # check how many total replications are on the tgt
     # these could be complete, running, or errored
     numoftgtreplicationstotal = check_num_active_target_replications()
@@ -483,7 +514,7 @@ def test5_findandcreateall_with_queue():
         while currentqueue < maxqueuedepth:
             srcfullpath = src_basepath + entry
             tgtfullpath = tgt_basepath + entry
-            newreplicationid = replication_create(srccluster, tgtclusterip, srcfullpath, tgtfullpath)
+            newreplicationid = replication_create(srccluster, tgtcluster.roundrobin(), srcfullpath, tgtfullpath)
             #time.sleep(0.5)  #might need delay to slow down timing on virtual test nodes
             auth_target_replication(tgtcluster, newreplicationid)
             currentqueue += 1
@@ -511,6 +542,16 @@ def test5_findandcreateall_with_queue():
         print('DEBUG: test5_findandcreateall_with_queue - cleaning up testrun', dismissoutput)
 
     return
+
+def test6_test_target_roundrobin():
+    testiplist = get_network_addresses_list(tgtcluster)
+    tgtcluster.iplist = testiplist
+    print(tgtcluster.roundrobin())
+    print(tgtcluster.roundrobin())
+    print(tgtcluster.roundrobin())
+    print(tgtcluster.roundrobin())
+    return
+
 
 
 
@@ -544,9 +585,12 @@ if __name__ == '__main__':
 
 
 
+    ######################################    
     # get target statuses tests/demos
-    # test1_create_and_destroy_onereplication()
-    # test2_delete_all_target_relationships()
-    # test3_delete_all_source_relationships()
-    # test4_compare_tgt_and_src_basepaths()
-    # test5_findandcreateall_with_queue()
+    ######################################
+    #test1_create_and_destroy_onereplication()
+    #test2_delete_all_target_relationships()
+    #test3_delete_all_source_relationships()
+    #test4_compare_tgt_and_src_basepaths()
+    #test5_findandcreateall_with_queue()
+    #test6_test_target_roundrobin()
