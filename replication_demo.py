@@ -27,9 +27,9 @@ parser.add_argument('-srcpw', action="store_true", default=False)
 parser.add_argument('-tgtpw', action="store_true", default=False)
 args = parser.parse_args()
 print('argssrcip', args.src)
-print('argssrcip', args.tgt)
-print('argssrcip', args.srcpw)
-print('argssrcip', args.tgtpw)
+print('argstgtip', args.tgt)
+print('argssrpw', args.srcpw)
+print('argstgtpw', args.tgtpw)
 
 
 # STATIC config info
